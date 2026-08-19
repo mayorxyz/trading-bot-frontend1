@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { TradingChart } from "./TradingChart";
-import { getLiveState, getZones, getLevels, getLiveStats, getOhlc } from "../lib/api";
-import type { LiveState, ZonesResponse, LevelsResponse, LiveStats, Candle, PatternHit } from "../types";
+import { getLiveState, getZones, getLevels, getLiveStats, getOhlc, getSymbols } from "../lib/api";
+import type { LiveState, ZonesResponse, LevelsResponse, LiveStats, Candle, PatternHit, ProfitFactorValue } from "../types";
 import { cn } from "../lib/utils";
 
 const TIMEFRAMES = ["1D", "4H", "1H"];
 const POLL_INTERVAL = 20000;
 
 export function LiveView() {
+  const [symbols, setSymbols] = useState<string[]>([]);
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [timeframe, setTimeframe] = useState("4H");
   const [liveState, setLiveState] = useState<LiveState | null>(null);
@@ -17,6 +18,13 @@ export function LiveView() {
   const [candles, setCandles] = useState<Candle[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Fetch available symbols on mount
+  useEffect(() => {
+    getSymbols()
+      .then(setSymbols)
+      .catch((err) => console.error("Failed to fetch symbols:", err));
+  }, []);
 
   const fetchData = async () => {
     try {
@@ -44,6 +52,12 @@ export function LiveView() {
   };
 
   useEffect(() => {
+    if (symbols.length > 0 && !symbols.includes(symbol)) {
+      setSymbol(symbols[0]);
+    }
+  }, [symbols]);
+
+  useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, POLL_INTERVAL);
     return () => clearInterval(interval);
@@ -61,9 +75,13 @@ export function LiveView() {
             onChange={(e) => setSymbol(e.target.value)}
             className="bg-secondary text-foreground border border-border rounded-md px-3 py-2 mono-nums"
           >
-            <option value="BTCUSDT">BTC/USDT</option>
-            <option value="ETHUSDT">ETH/USDT</option>
-            <option value="SOLUSDT">SOL/USDT</option>
+            {symbols.length > 0 ? (
+              symbols.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))
+            ) : (
+              <option value="BTCUSDT">BTC/USDT</option>
+            )}
           </select>
           <div className="flex gap-1 bg-secondary rounded-md p-1">
             {TIMEFRAMES.map((tf) => (
@@ -137,7 +155,7 @@ export function LiveView() {
       <div className="grid grid-cols-4 gap-4">
         <StatCard label="Win Rate" value={stats?.win_rate} format="percent" accent="live" />
         <StatCard label="Avg R:R" value={stats?.avg_rr} format="ratio" accent="live" />
-        <StatCard label="PF (R)" value={stats?.pf_R} format="ratio" accent="live" />
+        <StatCard label="PF (R)" value={stats?.pf_R} format="profitFactor" accent="live" />
         <StatCard label="Trades" value={stats?.trade_count} format="number" accent="live" />
       </div>
 
@@ -165,18 +183,25 @@ function StatCard({
   accent,
 }: {
   label: string;
-  value?: number;
-  format: "percent" | "ratio" | "number";
+  value?: number | ProfitFactorValue;
+  format: "percent" | "ratio" | "number" | "profitFactor";
   accent: "live" | "analysis";
 }) {
-  const formattedValue =
-    value === undefined
-      ? "--"
-      : format === "percent"
-      ? `${(value * 100).toFixed(1)}%`
-      : format === "ratio"
-      ? value.toFixed(2)
-      : value.toString();
+  let formattedValue = "--";
+  
+  if (value !== undefined) {
+    if (format === "profitFactor" && typeof value === "object" && value !== null) {
+      const pfValue = value as ProfitFactorValue;
+      formattedValue = pfValue.profit_factor_R_infinite ? "∞" : 
+        pfValue.profit_factor_R !== null ? pfValue.profit_factor_R.toFixed(2) : "--";
+    } else if (typeof value === "number") {
+      formattedValue = format === "percent"
+        ? `${(value * 100).toFixed(1)}%`
+        : format === "ratio"
+        ? value.toFixed(2)
+        : value.toString();
+    }
+  }
 
   return (
     <div className="bg-card border border-border rounded-md p-4">

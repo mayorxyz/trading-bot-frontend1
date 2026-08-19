@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { TradingChart } from "./TradingChart";
-import { startAnalysis, getAnalysisStatus } from "../lib/api";
-import type { AnalysisResult, Candle } from "../types";
+import { startAnalysis, getAnalysisStatus, getSymbols } from "../lib/api";
+import type { AnalysisResult, Candle, ProfitFactorValue } from "../types";
 import { cn } from "../lib/utils";
 
 export function AnalysisView() {
+  const [symbols, setSymbols] = useState<string[]>([]);
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [startDate, setStartDate] = useState("2024-01-01");
   const [endDate, setEndDate] = useState("2024-12-31");
@@ -12,6 +13,13 @@ export function AnalysisView() {
   const [status, setStatus] = useState<"idle" | "pending" | "running" | "done" | "error">("idle");
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Fetch available symbols on mount
+  useEffect(() => {
+    getSymbols()
+      .then(setSymbols)
+      .catch((err) => console.error("Failed to fetch symbols:", err));
+  }, []);
 
   const runAnalysis = async () => {
     try {
@@ -81,9 +89,13 @@ export function AnalysisView() {
             onChange={(e) => setSymbol(e.target.value)}
             className="bg-secondary text-foreground border border-border rounded-md px-3 py-2 mono-nums"
           >
-            <option value="BTCUSDT">BTC/USDT</option>
-            <option value="ETHUSDT">ETH/USDT</option>
-            <option value="SOLUSDT">SOL/USDT</option>
+            {symbols.length > 0 ? (
+              symbols.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))
+            ) : (
+              <option value="BTCUSDT">BTC/USDT</option>
+            )}
           </select>
 
           <input
@@ -164,7 +176,7 @@ export function AnalysisView() {
           <div className="grid grid-cols-4 gap-4">
             <StatCard label="Win Rate" value={result.stats.win_rate} format="percent" accent="analysis" />
             <StatCard label="Avg R:R" value={result.stats.avg_rr} format="ratio" accent="analysis" />
-            <StatCard label="PF (R)" value={result.stats.pf_R} format="ratio" accent="analysis" />
+            <StatCard label="PF (R)" value={result.stats.pf_R} format="profitFactor" accent="analysis" />
             <StatCard label="Trades" value={result.stats.trade_count} format="number" accent="analysis" />
           </div>
 
@@ -200,18 +212,25 @@ function StatCard({
   accent,
 }: {
   label: string;
-  value?: number;
-  format: "percent" | "ratio" | "number";
+  value?: number | ProfitFactorValue;
+  format: "percent" | "ratio" | "number" | "profitFactor";
   accent: "live" | "analysis";
 }) {
-  const formattedValue =
-    value === undefined
-      ? "--"
-      : format === "percent"
-      ? `${(value * 100).toFixed(1)}%`
-      : format === "ratio"
-      ? value.toFixed(2)
-      : value.toString();
+  let formattedValue = "--";
+  
+  if (value !== undefined) {
+    if (format === "profitFactor" && typeof value === "object" && value !== null) {
+      const pfValue = value as ProfitFactorValue;
+      formattedValue = pfValue.profit_factor_R_infinite ? "∞" : 
+        pfValue.profit_factor_R !== null ? pfValue.profit_factor_R.toFixed(2) : "--";
+    } else if (typeof value === "number") {
+      formattedValue = format === "percent"
+        ? `${(value * 100).toFixed(1)}%`
+        : format === "ratio"
+        ? value.toFixed(2)
+        : value.toString();
+    }
+  }
 
   return (
     <div className="bg-card border border-border rounded-md p-4">
