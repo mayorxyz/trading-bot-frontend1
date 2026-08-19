@@ -47,10 +47,15 @@ export interface LevelsResponse {
   levels: Level[];
 }
 
+export interface ProfitFactorValue {
+  profit_factor_R: number | null;
+  profit_factor_R_infinite: boolean;
+}
+
 export interface LiveStats {
   win_rate: number;
   avg_rr: number;
-  pf_R: number;
+  pf_R: number | ProfitFactorValue;
   trade_count: number;
 }
 
@@ -100,7 +105,7 @@ export interface FunnelBreakdown {
 export interface AnalysisStats {
   win_rate: number;
   avg_rr: number;
-  pf_R: number;
+  pf_R: number | ProfitFactorValue;
   funnel: FunnelBreakdown;
   trade_count: number;
 }

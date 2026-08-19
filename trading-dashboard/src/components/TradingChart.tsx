@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { createChart, ColorType, Time } from "lightweight-charts";
+import { createChart, ColorType, Time, CandlestickSeries } from "lightweight-charts";
 import type { Candle, FvgZone, ConsolidationZone, Level, Trade, PatternHit } from "../types";
 import { cn } from "../lib/utils";
 
@@ -21,9 +21,7 @@ export function TradingChart({
   className,
 }: TradingChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chartRef = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const candleSeriesRef = useRef<any>(null);
 
   useEffect(() => {
@@ -64,7 +62,7 @@ export function TradingChart({
 
     chartRef.current = chart;
 
-    const candleSeries = chart.addCandlestickSeries({
+    const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: "#22c55e",
       downColor: "#ef4444",
       borderUpColor: "#22c55e",
