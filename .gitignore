@@ -1,0 +1,56 @@
+```
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.local
+.env.*
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Logs
+*.log
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+
+# Coverage reports
+coverage/
+htmlcov/
+*.coverage
+
+# Cache directories
+.cache/
+.mypy_cache/
+.pytest_cache/
+.nyc_output/
+coverage/lcov-report/
+
+# Compiled JavaScript/TypeScript
+*.js.map
+*.ts.map
+
+# Package manager lock files (preserving package-lock.json since it's in the repo)
+# npm-debug.log*
+# yarn-debug.log*
+# yarn-error.log*
+
+# Editor temporary files
+*~
+\#*\#
+.\#*
+```.next/
