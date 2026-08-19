@@ -31,6 +31,8 @@ import type {
   LiveState,
   LiveStats,
   OhlcResponse,
+  Prediction,
+  PredictionSignal,
   ProfitFactorValue,
   SkipEntry,
   SymbolInfo,
@@ -43,6 +45,7 @@ import type {
   WireLiveState,
   WireLiveStats,
   WireOhlcResponse,
+  WirePredictResponse,
   WireSymbolsResponse,
   WireZonesResponse,
   ZonesResponse,
@@ -51,6 +54,22 @@ import type {
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 // ─── Fetch plumbing ─────────────────────────────────────────────────────────
+
+/**
+ * An error carrying the HTTP status, so callers can treat 422 ("not enough live
+ * history yet") differently from 503 ("Bybit unreachable") without parsing the
+ * message. `message` is still the backend's own `detail`, so callers that only
+ * read the message are unaffected.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
 
 /**
  * Fetch and parse JSON, surfacing the backend's own `detail` message on error.
@@ -66,10 +85,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const body: unknown = await response.json();
       const d = (body as { detail?: unknown } | null)?.detail;
       if (typeof d === "string" && d.length > 0) detail = d;
+      // FastAPI validation errors arrive as a list of {loc, msg, type}.
+      else if (Array.isArray(d) && d.length > 0) {
+        const first = d[0] as { msg?: unknown } | null;
+        if (typeof first?.msg === "string") detail = first.msg;
+      }
     } catch {
       // Non-JSON error body; the status line is all we have.
     }
-    throw new Error(detail);
+    throw new ApiError(detail, response.status);
   }
 
   return (await response.json()) as T;
@@ -455,6 +479,105 @@ export async function getAnalysisJobs(): Promise<{
 }> {
   const body = await request<{ jobs?: unknown }>("/analyze/jobs");
   return { jobs: Array.isArray(body?.jobs) ? (body.jobs as never[]) : [] };
+}
+
+// ─── Prediction (stateless single run) ──────────────────────────────────────
+
+/** Human wording for the pipeline's confluence component keys. */
+const CONFLUENCE_LABELS: Record<string, string> = {
+  sr_breakout: "S/R breakout",
+  consolidation_breakout: "Consolidation breakout",
+  wick_rejection: "Wick rejection",
+  volume_spike: "Volume spike",
+  volume_divergence: "Volume divergence",
+  fib_confluence: "Fib confluence",
+  pattern_match: "Pattern match",
+  trend_alignment: "Trend alignment",
+  multi_timeframe: "Multi-timeframe",
+};
+
+function prettyKey(key: string): string {
+  return CONFLUENCE_LABELS[key] ?? key.replace(/_/g, " ");
+}
+
+/**
+ * The breakdown is a flat map of component -> contribution. Values arrive as a
+ * bool (hit or not) or a number (points awarded), depending on the component, so
+ * both are folded into {hit, weight}.
+ */
+function toConfluence(
+  breakdown: Record<string, unknown> | null | undefined
+): PredictionSignal["confluence"] {
+  if (!isObject(breakdown)) return [];
+
+  return Object.entries(breakdown).map(([key, value]) => {
+    if (typeof value === "boolean") {
+      return { key, label: prettyKey(key), hit: value, weight: null };
+    }
+    const weight = num(value);
+    if (weight != null) {
+      return { key, label: prettyKey(key), hit: weight > 0, weight };
+    }
+    return { key, label: prettyKey(key), hit: Boolean(value), weight: null };
+  });
+}
+
+/**
+ * Run the signal pipeline once against live candles — the "Run Analysis" action.
+ *
+ * Distinct from startAnalysis in every respect: no date range, no job queue, no
+ * persistence, and no dependency on CSV history, so it answers for any symbol
+ * Bybit lists. A pipeline skip comes back as a 200 with `fired: false`, which is
+ * a result and not an error; genuine failures throw an ApiError whose `status`
+ * distinguishes "not enough live history yet" (422) from the rest.
+ */
+export async function postPredict(symbol: string, timeframe: string): Promise<Prediction> {
+  const body = await request<WirePredictResponse>("/predict", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ symbol, timeframe }),
+  });
+
+  const wire = body?.signal;
+  const signal: PredictionSignal | null =
+    body?.signal_fired && isObject(wire)
+      ? {
+          direction: toDirection(wire.direction),
+          entry: num(wire.entry),
+          sl: num(wire.sl),
+          tp: num(wire.tp),
+          slMethod: wire.sl_method ?? null,
+          tpMethod: wire.tp_method ?? null,
+          rr: num(wire.rr),
+          confluenceScore: num(wire.confluence_score),
+          confidence: wire.confidence ?? null,
+          confluence: toConfluence(wire.confluence_breakdown),
+          entryLevelTouches: num(wire.entry_level_touches),
+        }
+      : null;
+
+  const barsUsed = isObject(body?.bars_used)
+    ? Object.entries(body.bars_used).map(([timeframeKey, info]) => ({
+        timeframe: timeframeKey.toUpperCase(),
+        bars: num((info as { bars?: unknown } | null)?.bars) ?? 0,
+        lastBar: (info as { last_bar?: string | null } | null)?.last_bar ?? null,
+      }))
+    : [];
+
+  return {
+    symbol: body?.symbol ?? symbol,
+    timeframe: body?.timeframe ?? timeframe,
+    timestamp: body?.timestamp ?? null,
+    source: body?.source ?? "unknown",
+    persisted: toBool(body?.persisted),
+    analysisAvailable: toBool(body?.analysis_available),
+    fired: toBool(body?.signal_fired),
+    skipReason: body?.skip_reason ?? null,
+    skipReasonRaw: body?.skip_reason_raw ?? null,
+    signal,
+    barsUsed,
+    executionBars: num(body?.execution_bars) ?? 0,
+  };
 }
 
 export { API_BASE_URL };

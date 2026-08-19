@@ -52,6 +52,7 @@ function App() {
   );
 
   const [catalog, setCatalog] = useState<SymbolInfo[]>([]);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [symbolsLoading, setSymbolsLoading] = useState(true);
   const [symbolsError, setSymbolsError] = useState<string | null>(null);
   const [health, setHealth] = useState<Health>("unknown");
@@ -60,7 +61,22 @@ function App() {
   const [refreshSignal, setRefreshSignal] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
 
-  const symbols = useMemo(() => catalog.map((entry) => entry.symbol), [catalog]);
+  /**
+   * Symbols that can actually be backtested.
+   *
+   * The backend has no `analysis_available` flag; a symbol appears in /symbols
+   * only because a CSV was found for it, and `timeframes` lists which ones. A
+   * non-empty `timeframes` is therefore exactly "has local CSV history", which
+   * is what /analyze needs to replay against.
+   */
+  const analysisCatalog = useMemo(
+    () => catalog.filter((entry) => entry.timeframes.length > 0),
+    [catalog]
+  );
+
+  // Analysis mode only offers backtest-capable symbols; live mode offers all.
+  const activeCatalog = mode === "analysis" ? analysisCatalog : catalog;
+  const symbols = useMemo(() => activeCatalog.map((entry) => entry.symbol), [activeCatalog]);
 
   // Timeframes the backend actually has for the selected symbol. Drives the
   // rail's provenance glyphs and every /ohlc request.
@@ -68,6 +84,14 @@ function App() {
     () => catalog.find((entry) => entry.symbol === symbol)?.timeframes ?? [],
     [catalog, symbol]
   );
+
+  /**
+   * True only once /symbols has answered and the selected symbol is spelled
+   * exactly as it appears there. Until this holds, nothing may be POSTed to
+   * /analyze — a persisted value like "BTCUSD" is a well-formed string that no
+   * amount of local validation can tell apart from a real symbol.
+   */
+  const symbolConfirmed = catalogLoaded && symbols.includes(symbol);
 
   // ── Symbol list ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -77,6 +101,7 @@ function App() {
       .then((list) => {
         if (cancelled) return;
         setCatalog(list);
+        setCatalogLoaded(true);
         setSymbolsError(null);
       })
       .catch((err: unknown) => {
@@ -92,11 +117,24 @@ function App() {
     };
   }, []);
 
-  // A persisted symbol the backend no longer serves falls back to the first.
+  /**
+   * Reconcile the persisted symbol against the authoritative list.
+   *
+   * A case or whitespace difference is corrected to the backend's exact
+   * spelling; anything genuinely absent — a renamed pair, a hand-edited
+   * localStorage value, a symbol with no CSV history when switching to analysis
+   * mode — falls back to the first available entry. Re-runs on mode change
+   * because the analysis list is narrower than the live one.
+   */
   useEffect(() => {
-    if (symbols.length > 0 && !symbols.includes(symbol)) setSymbol(symbols[0]);
+    if (symbols.length === 0) return;
+    if (symbols.includes(symbol)) return;
+
+    const loose = symbol.trim().toUpperCase();
+    const match = symbols.find((s) => s.toUpperCase() === loose);
+    setSymbol(match ?? symbols[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbols]);
+  }, [symbols, mode]);
 
   // ── Connection indicator ─────────────────────────────────────────────────
   useEffect(() => {
@@ -159,6 +197,11 @@ function App() {
           focusSignal={searchSignal}
           loading={symbolsLoading}
           error={symbolsError}
+          scopeNote={
+            mode === "analysis"
+              ? `${analysisCatalog.length} of ${catalog.length} have CSV history to backtest`
+              : undefined
+          }
         />
 
         <div className="ml-auto flex items-center gap-4">
@@ -219,6 +262,10 @@ function App() {
                 timeframe={timeframe}
                 available={available}
                 apiBase={API_BASE_URL}
+                symbolConfirmed={symbolConfirmed}
+                catalogLoaded={catalogLoaded}
+                symbolsError={symbolsError}
+                backtestableCount={analysisCatalog.length}
               />
             )}
           </ErrorBoundary>

@@ -18,6 +18,12 @@ interface SymbolComboboxProps {
   loading?: boolean;
   /** /symbols failed; the trigger shows the persisted value and says so. */
   error?: string | null;
+  /**
+   * Shown in the footer when the list is a restricted subset rather than every
+   * symbol the backend knows — e.g. analysis mode, which only offers pairs with
+   * CSV history to backtest against.
+   */
+  scopeNote?: string;
 }
 
 /** Substring match, with prefix matches ranked first. */
@@ -42,6 +48,7 @@ export function SymbolCombobox({
   focusSignal = 0,
   loading = false,
   error = null,
+  scopeNote,
 }: SymbolComboboxProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -245,31 +252,48 @@ export function SymbolCombobox({
           ) : (
             <div className="px-3 py-4">
               <p className="label mb-1.5 text-etch">
-                {loading ? "Loading symbols" : error ? "Symbol list unavailable" : "No match"}
+                {loading
+                  ? "Loading symbols"
+                  : error
+                    ? "Symbol list unavailable"
+                    : symbols.length === 0
+                      ? "Nothing to choose from"
+                      : "No match"}
               </p>
               <p className="data text-[10px] leading-relaxed text-etch-dim">
                 {loading
                   ? "Waiting on GET /symbols."
                   : error
                     ? `GET /symbols failed — ${error}. The last selected symbol is still active; clear the filter or restart the backend to browse the list.`
-                    : `Nothing in the symbol list contains “${query}”. Clear the filter to see all ${symbols.length}.`}
+                    : symbols.length === 0
+                      ? // Not a failure: the list itself is empty. In analysis mode
+                        // that means no symbol has CSV history to backtest against.
+                        scopeNote
+                        ? `No symbol qualifies — ${scopeNote}.`
+                        : "The backend returned no symbols."
+                      : `Nothing in the symbol list contains “${query}”. Clear the filter to see all ${symbols.length}.`}
               </p>
             </div>
           )}
 
-          <div className="flex items-center gap-3 border-t border-rule bg-bay px-2.5 py-1.5">
-            {[
-              ["↑↓", "move"],
-              ["⏎", "select"],
-              ["esc", "close"],
-            ].map(([k, meaning]) => (
-              <span key={k} className="flex items-center gap-1">
-                <kbd className="data border border-rule px-1 text-[9px] leading-[13px] text-etch">
-                  {k}
-                </kbd>
-                <span className="label text-[9px] text-etch-dim">{meaning}</span>
-              </span>
-            ))}
+          <div className="flex flex-col gap-1 border-t border-rule bg-bay px-2.5 py-1.5">
+            {scopeNote ? (
+              <span className="data text-[9px] leading-none text-etch-dim">{scopeNote}</span>
+            ) : null}
+            <div className="flex items-center gap-3">
+              {[
+                ["↑↓", "move"],
+                ["⏎", "select"],
+                ["esc", "close"],
+              ].map(([k, meaning]) => (
+                <span key={k} className="flex items-center gap-1">
+                  <kbd className="data border border-rule px-1 text-[9px] leading-[13px] text-etch">
+                    {k}
+                  </kbd>
+                  <span className="label text-[9px] text-etch-dim">{meaning}</span>
+                </span>
+              ))}
+            </div>
           </div>
         </div>
       ) : null}

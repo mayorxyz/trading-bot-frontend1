@@ -22,9 +22,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TradingChart } from "./TradingChart";
 import { StatStrip } from "./StatStrip";
 import { NoticeAction, StateNotice } from "./StateNotice";
+import { IDLE_PREDICTION, PredictionPanel, type PredictionState } from "./PredictionPanel";
 import { PanelHead } from "./ui/Panel";
-import { getAnalysisStatus, getOhlc, startAnalysis } from "../lib/api";
-import { applyDerivation, classify, getTimeframe, nativeTimeframes, resolveRequest } from "../lib/timeframes";
+import { ApiError, getAnalysisStatus, getOhlc, postPredict, startAnalysis } from "../lib/api";
+import { applyDerivation, nativeTimeframes, resolveRequest } from "../lib/timeframes";
 import { formatCount, formatPrice, formatRatio, formatStamp } from "../lib/format";
 import type { AnalysisResult, AnalysisStatus, Candle, FunnelBreakdown, Trade } from "../types";
 import { cn } from "../lib/utils";
@@ -40,11 +41,26 @@ export function AnalysisView({
   timeframe,
   available,
   apiBase,
+  symbolConfirmed,
+  catalogLoaded,
+  symbolsError,
+  backtestableCount,
 }: {
   symbol: string;
   timeframe: string;
   available: string[];
   apiBase: string;
+  /**
+   * True only when /symbols has answered and `symbol` matches an entry exactly.
+   * Nothing is submitted to /analyze while this is false: the symbol may be a
+   * stale localStorage value (a hand-edited or renamed pair such as "BTCUSD"),
+   * which the backend would accept as a request and then fail to find data for.
+   */
+  symbolConfirmed: boolean;
+  catalogLoaded: boolean;
+  symbolsError: string | null;
+  /** How many symbols have CSV history, for the blocked-state copy. */
+  backtestableCount: number;
 }) {
   const [startDate, setStartDate] = useState("2026-01-01");
   const [endDate, setEndDate] = useState("2026-08-01");
@@ -62,6 +78,43 @@ export function AnalysisView({
     [timeframe, available]
   );
 
+  // ── "Run Analysis" — POST /predict ──────────────────────────────────────
+  //
+  // Entirely separate from the backtest below: no job queue, no date range, no
+  // persistence, and deliberately NOT gated on symbolConfirmed. /predict pulls
+  // its own candles from Bybit, so it answers for any listed pair — including
+  // chart-only symbols with no CSV history to backtest against.
+  const [prediction, setPrediction] = useState<PredictionState>(IDLE_PREDICTION);
+  const predictGeneration = useRef(0);
+
+  const runPredict = useCallback(async () => {
+    const gen = ++predictGeneration.current;
+    setPrediction({ status: "running", data: null, error: null, errorStatus: null });
+
+    try {
+      const result = await postPredict(symbol, timeframe);
+      if (gen !== predictGeneration.current) return;
+      setPrediction({ status: "ready", data: result, error: null, errorStatus: null });
+    } catch (err) {
+      if (gen !== predictGeneration.current) return;
+      setPrediction({
+        status: "error",
+        data: null,
+        error: err instanceof Error ? err.message : "request failed",
+        // 422 is the documented "not enough live history yet" case; the panel
+        // words that differently from a genuine fault.
+        errorStatus: err instanceof ApiError ? err.status : null,
+      });
+    }
+  }, [symbol, timeframe]);
+
+  // A prediction is a point-in-time reading of one symbol at one timeframe, so it
+  // is dropped when either changes rather than left labelled with the new pair.
+  useEffect(() => {
+    predictGeneration.current++;
+    setPrediction(IDLE_PREDICTION);
+  }, [symbol, timeframe]);
+
   const stopPolling = useCallback(() => {
     if (pollRef.current !== null) {
       window.clearInterval(pollRef.current);
@@ -72,8 +125,22 @@ export function AnalysisView({
   useEffect(() => stopPolling, [stopPolling]);
 
   const running = job === "pending" || job === "running";
-
+  const predicting = prediction.status === "running";
   const runAnalysis = useCallback(async () => {
+    // Last line of defence. The button is disabled in this state, but a hotkey,
+    // a retry action or a future call site must not be able to bypass it: the
+    // only symbols that may reach /analyze are the ones /symbols returned.
+    if (!symbolConfirmed) {
+      setJob("error");
+      setErrorMsg(
+        `Refusing to submit "${symbol}" — it is not in the list GET /symbols returned. ` +
+          (catalogLoaded
+            ? "Pick a symbol from the selector."
+            : "Waiting for /symbols to answer.")
+      );
+      return;
+    }
+
     stopPolling();
     setJob("pending");
     setErrorMsg(null);
@@ -126,7 +193,7 @@ export function AnalysisView({
         setJob("error");
       }
     }, POLL_INTERVAL);
-  }, [symbol, startDate, endDate, stopPolling]);
+  }, [symbol, startDate, endDate, stopPolling, symbolConfirmed, catalogLoaded]);
 
   // Real candles for the chart backdrop. Skipped when the selected timeframe has
   // no data path for this symbol.
@@ -202,10 +269,17 @@ export function AnalysisView({
           <button
             type="button"
             onClick={() => void runAnalysis()}
-            disabled={running}
+            disabled={running || !symbolConfirmed}
+            title={
+              symbolConfirmed
+                ? undefined
+                : catalogLoaded
+                  ? `"${symbol}" is not one of the symbols GET /symbols returned`
+                  : "Waiting for GET /symbols"
+            }
             className={cn(
               "mt-5 flex h-7 items-center gap-2 border px-3 transition-colors",
-              running
+              running || !symbolConfirmed
                 ? "cursor-not-allowed border-rule bg-bay"
                 : "border-rule-bright bg-well hover:border-arc"
             )}
@@ -214,11 +288,44 @@ export function AnalysisView({
               aria-hidden
               className={cn(
                 "h-1 w-1 rounded-full",
-                running ? "animate-pulse-dot bg-etch" : "bg-arc"
+                running ? "animate-pulse-dot bg-etch" : symbolConfirmed ? "bg-arc" : "bg-etch-dim"
               )}
             />
-            <span className={cn("label text-[10px]", running ? "text-etch-dim" : "text-signal")}>
+            <span
+              className={cn(
+                "label text-[10px]",
+                running || !symbolConfirmed ? "text-etch-dim" : "text-signal"
+              )}
+            >
               {running ? "Running" : "Run backtest"}
+            </span>
+          </button>
+
+          <span aria-hidden className="mt-5 h-7 w-px bg-rule" />
+
+          {/* Separate action, separate endpoint. Ungated: /predict fetches its
+              own live candles and needs no CSV history. */}
+          <button
+            type="button"
+            onClick={() => void runPredict()}
+            disabled={predicting}
+            title={`POST /predict — one stateless pipeline run on live ${timeframe} candles for ${symbol}`}
+            className={cn(
+              "mt-5 flex h-7 items-center gap-2 border px-3 transition-colors",
+              predicting
+                ? "cursor-not-allowed border-rule bg-bay"
+                : "border-rule-bright bg-well hover:border-arc"
+            )}
+          >
+            <span
+              aria-hidden
+              className={cn(
+                "h-1 w-1 rounded-full",
+                predicting ? "animate-pulse-dot bg-etch" : "bg-arc"
+              )}
+            />
+            <span className={cn("label text-[10px]", predicting ? "text-etch-dim" : "text-signal")}>
+              {predicting ? "Analysing" : "Run analysis"}
             </span>
           </button>
         </div>
@@ -231,6 +338,15 @@ export function AnalysisView({
           jobTimeframe={jobTimeframe}
         />
       </div>
+
+      {/* ── Live signal result (Run analysis). Absent until first run, and
+             independent of the backtest bands below. ─────────────────────── */}
+      <PredictionPanel
+        state={prediction}
+        symbol={symbol}
+        timeframe={timeframe}
+        onRetry={() => void runPredict()}
+      />
 
       {/* ── Band 3: chart ──────────────────────────────────────────────── */}
       <div className="flex min-h-0 flex-1 flex-col hair-b">
@@ -259,6 +375,10 @@ export function AnalysisView({
             apiBase={apiBase}
             startDate={startDate}
             endDate={endDate}
+            symbolConfirmed={symbolConfirmed}
+            catalogLoaded={catalogLoaded}
+            symbolsError={symbolsError}
+            backtestableCount={backtestableCount}
             onRun={() => void runAnalysis()}
           />
         </div>
@@ -368,6 +488,10 @@ function AnalysisChartRegion({
   apiBase,
   startDate,
   endDate,
+  symbolConfirmed,
+  catalogLoaded,
+  symbolsError,
+  backtestableCount,
   onRun,
 }: {
   job: JobState;
@@ -383,10 +507,61 @@ function AnalysisChartRegion({
   apiBase: string;
   startDate: string;
   endDate: string;
+  symbolConfirmed: boolean;
+  catalogLoaded: boolean;
+  symbolsError: string | null;
+  backtestableCount: number;
   onRun: () => void;
 }) {
   const resultTrades = Array.isArray(result?.trades) ? result.trades : [];
   const barCount = candles?.length ?? 0;
+
+  // The symbol cannot be submitted yet. Explain which of the two reasons it is,
+  // because the fix differs: wait, versus pick a different symbol.
+  if (!symbolConfirmed && job === "idle") {
+    if (!catalogLoaded) {
+      return (
+        <StateNotice
+          severity={symbolsError ? "fault" : "waiting"}
+          eyebrow={symbolsError ? "Symbol list unavailable" : "Verifying symbol"}
+          headline={
+            symbolsError
+              ? "The symbol list could not be loaded, so no backtest can be submitted."
+              : "Waiting for the authoritative symbol list."
+          }
+          detail={
+            symbolsError
+              ? `GET ${apiBase}/symbols — ${symbolsError}`
+              : `GET ${apiBase}/symbols`
+          }
+        >
+          <p>
+            A backtest is only submitted with a symbol spelled exactly as{" "}
+            <code className="data text-signal">/symbols</code> reports it. The restored selection is{" "}
+            <b>{symbol}</b>, but until that list arrives there is no way to tell a real pair from a
+            stale one, so <b>Run backtest</b> stays disabled.
+          </p>
+        </StateNotice>
+      );
+    }
+
+    return (
+      <StateNotice
+        severity="empty"
+        eyebrow="Symbol not backtestable"
+        headline={`“${symbol}” is not a symbol this backend can backtest.`}
+        detail={`GET /symbols lists ${backtestableCount} symbol${backtestableCount === 1 ? "" : "s"} with CSV history`}
+        actions={<NoticeAction onClick={onRun}>Retry</NoticeAction>}
+      >
+        <p>
+          It is either misspelled, renamed, or has no local CSV history to replay against — a
+          restored selection from an earlier session can be any of those. Pick a pair from the header
+          selector, which in analysis mode lists only backtestable symbols; the selection is shared
+          with live mode.
+        </p>
+      </StateNotice>
+    );
+  }
 
   if (job === "idle") {
     return (

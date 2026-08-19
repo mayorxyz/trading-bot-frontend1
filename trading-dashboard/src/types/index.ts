@@ -216,6 +216,47 @@ export interface WireAnalysisStatusResponse {
   trades: WireAnalysisTrade[];
 }
 
+/**
+ * POST /predict — the signal pipeline run once against live Bybit candles held
+ * in memory. Stateless: nothing is persisted, so there is no job id and no
+ * history. `signal` is null when the pipeline skipped, which is a 200, not an
+ * error.
+ */
+export interface WirePredictSignal {
+  pair: string;
+  timeframe: string;
+  direction: string; // LONG | SHORT
+  entry: number | null;
+  entry_level_touches: number | null;
+  sl: number | null;
+  sl_method: string | null;
+  tp: number | null;
+  tp_method: string | null;
+  rr: number | null;
+  confluence_score: number | null;
+  confidence: string | null;
+  confluence_breakdown: Record<string, unknown> | null;
+  swings_found?: number;
+  sr_levels_found?: number;
+  consolidation_zones?: number;
+}
+
+export interface WirePredictResponse {
+  symbol: string;
+  timeframe: string;
+  timestamp: string | null;
+  timestamp_ms: number | null;
+  source: string;
+  persisted: boolean;
+  analysis_available: boolean;
+  signal_fired: boolean;
+  skip_reason: string | null;
+  skip_reason_raw: string | null;
+  signal: WirePredictSignal | null;
+  bars_used: Record<string, { bars: number; last_bar: string | null }>;
+  execution_bars: number;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // NORMALISED SHAPES — what the components consume
 // ═══════════════════════════════════════════════════════════════════════════
@@ -379,4 +420,47 @@ export interface PatternHit {
   price: number;
   pattern_name: string;
   direction?: "long" | "short";
+}
+
+/**
+ * A single stateless pipeline run — "Run Analysis", as opposed to the queued
+ * backtest behind "Run backtest".
+ *
+ * `fired: false` is a real outcome, not a failure: the pipeline evaluated live
+ * candles and declined to signal, with `skipReason` saying why.
+ */
+export interface Prediction {
+  symbol: string;
+  timeframe: string;
+  /** ISO timestamp of the last live bar the pipeline saw. */
+  timestamp: string | null;
+  /** Where the candles came from, e.g. "bybit_live_memory". */
+  source: string;
+  /** Always false — /predict writes nothing. Surfaced so the UI can say so. */
+  persisted: boolean;
+  /** Whether this symbol also has CSV history for a backtest. */
+  analysisAvailable: boolean;
+  fired: boolean;
+  skipReason: string | null;
+  skipReasonRaw: string | null;
+  signal: PredictionSignal | null;
+  /** Bars available per timeframe, for the "how much history" readout. */
+  barsUsed: Array<{ timeframe: string; bars: number; lastBar: string | null }>;
+  executionBars: number;
+}
+
+export interface PredictionSignal {
+  direction: "long" | "short";
+  entry: number | null;
+  sl: number | null;
+  tp: number | null;
+  slMethod: string | null;
+  tpMethod: string | null;
+  rr: number | null;
+  /** 0–100. */
+  confluenceScore: number | null;
+  confidence: string | null;
+  /** Flattened breakdown; only the contributing components are kept. */
+  confluence: Array<{ key: string; label: string; hit: boolean; weight: number | null }>;
+  entryLevelTouches: number | null;
 }
