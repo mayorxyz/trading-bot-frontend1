@@ -1,19 +1,21 @@
 // ════════════════════════════════════════════════════════════════════════════
 // ANALYSIS VIEW
 //
-// Starts a job with POST /analyze, polls /analyze/status/{id} every 2s, gives
-// up after 60s. Same contract, same cadence.
+// Starts a job with POST /analyze, polls /analyze/status/{id} every 2s, gives up
+// after 60s. Never touches the live endpoints.
 //
-// Three corrections to the previous implementation, all behind the same calls:
+// Two things the real backend contract forces, both surfaced rather than papered
+// over:
 //
-//   · the poll interval is cleared on unmount (it used to keep running).
-//   · the 60s abort compares against a deadline instead of reading `status`
-//     through a stale closure, where it always saw the initial value and so
-//     never fired correctly.
-//   · the chart no longer fabricates candles with Math.random(). It requests
-//     real ones from /ohlc; when the analysed window falls outside what /ohlc
-//     can return — it takes symbol, timeframe and limit, with no date range —
-//     the region says so instead of drawing noise under real trade markers.
+//   · Analysis trades store only a signal timestamp — there is no exit time — so
+//     the chart draws entry-anchored risk/reward boxes and folds the outcome into
+//     the entry marker. No duration is invented.
+//   · /ohlc takes symbol, timeframe and limit with no date range, so a window
+//     older than the most recent `limit` bars cannot be charted. When that
+//     happens the region says so and the ledger carries the full result.
+//
+// Nothing here generates candles or statistics. The previous implementation drew
+// 50 bars of Math.random() noise behind real trade markers; that is gone.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -22,37 +24,43 @@ import { StatStrip } from "./StatStrip";
 import { NoticeAction, StateNotice } from "./StateNotice";
 import { PanelHead } from "./ui/Panel";
 import { getAnalysisStatus, getOhlc, startAnalysis } from "../lib/api";
-import { applyDerivation, getTimeframe, resolveRequest } from "../lib/timeframes";
-import { formatPrice, formatRatio, formatStamp } from "../lib/format";
-import type { AnalysisResult, AnalysisStatus, Candle, Trade } from "../types";
+import { applyDerivation, classify, getTimeframe, nativeTimeframes, resolveRequest } from "../lib/timeframes";
+import { formatCount, formatPrice, formatRatio, formatStamp } from "../lib/format";
+import type { AnalysisResult, AnalysisStatus, Candle, FunnelBreakdown, Trade } from "../types";
 import { cn } from "../lib/utils";
 
 const POLL_INTERVAL = 2000;
 const JOB_TIMEOUT = 60000;
-const CANDLE_TARGET = 400;
+const CANDLE_TARGET = 500;
 
 type JobState = "idle" | AnalysisStatus | "timeout";
 
 export function AnalysisView({
   symbol,
   timeframe,
+  available,
   apiBase,
 }: {
   symbol: string;
   timeframe: string;
+  available: string[];
   apiBase: string;
 }) {
-  const [startDate, setStartDate] = useState("2024-01-01");
-  const [endDate, setEndDate] = useState("2024-12-31");
+  const [startDate, setStartDate] = useState("2026-01-01");
+  const [endDate, setEndDate] = useState("2026-08-01");
   const [job, setJob] = useState<JobState>("idle");
   const [jobId, setJobId] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [jobTimeframe, setJobTimeframe] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [rawCandles, setRawCandles] = useState<Candle[]>([]);
   const [candleError, setCandleError] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
-  const request = useMemo(() => resolveRequest(timeframe, CANDLE_TARGET), [timeframe]);
+  const request = useMemo(
+    () => resolveRequest(timeframe, CANDLE_TARGET, available),
+    [timeframe, available]
+  );
 
   const stopPolling = useCallback(() => {
     if (pollRef.current !== null) {
@@ -71,6 +79,7 @@ export function AnalysisView({
     setErrorMsg(null);
     setResult(null);
     setJobId(null);
+    setJobTimeframe(null);
 
     let id: string;
     try {
@@ -87,8 +96,8 @@ export function AnalysisView({
       return;
     }
 
-    // Deadline is captured once; the tick compares against it, so the abort no
-    // longer depends on state visible inside a stale closure.
+    // Deadline captured once; the tick compares against it, so the abort no
+    // longer depends on state read through a stale closure.
     const deadline = Date.now() + JOB_TIMEOUT;
 
     pollRef.current = window.setInterval(async () => {
@@ -101,6 +110,7 @@ export function AnalysisView({
       try {
         const status = await getAnalysisStatus(id);
         setJob(status.status);
+        setJobTimeframe(status.timeframe);
 
         if (status.status === "done") {
           stopPolling();
@@ -118,16 +128,20 @@ export function AnalysisView({
     }, POLL_INTERVAL);
   }, [symbol, startDate, endDate, stopPolling]);
 
-  // Real candles for the chart backdrop, at the selected timeframe.
+  // Real candles for the chart backdrop. Skipped when the selected timeframe has
+  // no data path for this symbol.
   useEffect(() => {
-    if (!result?.trades?.length) return;
+    if (!result?.trades?.length || !request) {
+      setRawCandles([]);
+      return;
+    }
 
     let cancelled = false;
     setCandleError(null);
 
     getOhlc(symbol, request.timeframe, request.limit)
       .then((res) => {
-        if (!cancelled) setRawCandles(res.candles ?? []);
+        if (!cancelled) setRawCandles(res.candles);
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -139,14 +153,14 @@ export function AnalysisView({
     return () => {
       cancelled = true;
     };
-  }, [result, symbol, request.timeframe, request.limit]);
+  }, [result, symbol, request]);
 
-  const candles = useMemo(
-    () => (request.needsResample ? applyDerivation(timeframe, rawCandles) : rawCandles),
-    [rawCandles, request.needsResample, timeframe]
-  );
+  const candles = useMemo(() => {
+    const rows = Array.isArray(rawCandles) ? rawCandles : [];
+    return request?.needsResample ? applyDerivation(timeframe, rows) : rows;
+  }, [rawCandles, request?.needsResample, timeframe]);
 
-  // Does the analysed window actually intersect the candles /ohlc returned?
+  // Does the analysed window intersect the candles /ohlc returned?
   const overlap = useMemo(() => {
     if (!Array.isArray(result?.trades) || result.trades.length === 0) return false;
     if (candles.length === 0) return false;
@@ -156,16 +170,7 @@ export function AnalysisView({
   }, [result, candles]);
 
   const trades = Array.isArray(result?.trades) ? result.trades : [];
-  // A `done` job that returns a partial payload must not take the panel down
-  // with it, so the funnel reads through a zero-filled default.
   const funnel = result?.stats?.funnel;
-  const funnelRows: Array<[string, number]> = [
-    ["Signals", funnel?.total_signals ?? 0],
-    ["Regime", funnel?.passed_regime ?? 0],
-    ["Alignment", funnel?.passed_alignment ?? 0],
-    ["Consolidation", funnel?.passed_consolidation ?? 0],
-    ["Entered", funnel?.entered_trades ?? 0],
-  ];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -218,7 +223,13 @@ export function AnalysisView({
           </button>
         </div>
 
-        <JobStatusPanel job={job} jobId={jobId} symbol={symbol} range={`${startDate} → ${endDate}`} />
+        <JobStatusPanel
+          job={job}
+          jobId={jobId}
+          symbol={symbol}
+          range={`${startDate} → ${endDate}`}
+          jobTimeframe={jobTimeframe}
+        />
       </div>
 
       {/* ── Band 3: chart ──────────────────────────────────────────────── */}
@@ -243,6 +254,8 @@ export function AnalysisView({
             candleError={candleError}
             symbol={symbol}
             timeframe={timeframe}
+            available={available}
+            hasCandlePath={request !== null}
             apiBase={apiBase}
             startDate={startDate}
             endDate={endDate}
@@ -253,28 +266,24 @@ export function AnalysisView({
 
       {/* ── Band 4: stats, funnel, ledger ──────────────────────────────── */}
       {result ? (
-        <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)]">
+        <div className="grid shrink-0 grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)_minmax(0,1.1fr)]">
           <div className="flex flex-col hair-r">
-            <PanelHead>Result</PanelHead>
+            <PanelHead
+              trailing={`${result.stats.wins}W / ${result.stats.losses}L`}
+            >
+              Result
+            </PanelHead>
             <StatStrip stats={result.stats} className="grid-cols-2" />
           </div>
 
           <div className="flex flex-col hair-r">
-            <PanelHead trailing={`${funnel?.total_signals ?? 0} in`}>Signal funnel</PanelHead>
-            <div className="flex flex-col gap-1.5 px-4 py-3">
-              {funnelRows.map(([label, value], i) => (
-                <FunnelRow
-                  key={label}
-                  label={label}
-                  value={value}
-                  total={funnel?.total_signals ?? 0}
-                  terminal={i === funnelRows.length - 1}
-                />
-              ))}
-            </div>
+            <PanelHead trailing={`${formatCount(funnel?.total)} test points`}>
+              Rejection breakdown
+            </PanelHead>
+            <FunnelPanel funnel={funnel} />
           </div>
 
-          <div className="flex min-h-[132px] flex-col">
+          <div className="flex min-h-[148px] flex-col">
             <PanelHead trailing={`${trades.length} rows`}>Trade ledger</PanelHead>
             <TradeLedger trades={trades} />
           </div>
@@ -300,11 +309,13 @@ function JobStatusPanel({
   jobId,
   symbol,
   range,
+  jobTimeframe,
 }: {
   job: JobState;
   jobId: string | null;
   symbol: string;
   range: string;
+  jobTimeframe: string | null;
 }) {
   const copy = JOB_COPY[job];
   const active = job === "pending" || job === "running";
@@ -335,6 +346,7 @@ function JobStatusPanel({
 
       <span className="data text-[10px] text-etch-dim">
         {symbol} · {range}
+        {jobTimeframe ? ` · ${jobTimeframe}` : ""}
       </span>
     </div>
   );
@@ -351,6 +363,8 @@ function AnalysisChartRegion({
   candleError,
   symbol,
   timeframe,
+  available,
+  hasCandlePath,
   apiBase,
   startDate,
   endDate,
@@ -364,11 +378,16 @@ function AnalysisChartRegion({
   candleError: string | null;
   symbol: string;
   timeframe: string;
+  available: string[];
+  hasCandlePath: boolean;
   apiBase: string;
   startDate: string;
   endDate: string;
   onRun: () => void;
 }) {
+  const resultTrades = Array.isArray(result?.trades) ? result.trades : [];
+  const barCount = candles?.length ?? 0;
+
   if (job === "idle") {
     return (
       <StateNotice
@@ -380,8 +399,9 @@ function AnalysisChartRegion({
       >
         <p>
           Analysis mode never reads the live endpoints — it submits a job over the date range above
-          and reports what the strategy would have done. The current symbol, <b>{symbol}</b>, comes
-          from the selector in the header and is shared with live mode.
+          and reports what the strategy would have done. The symbol, <b>{symbol}</b>, comes from the
+          header selector and is shared with live mode; the backend picks its own execution
+          timeframe for the run.
         </p>
       </StateNotice>
     );
@@ -417,8 +437,8 @@ function AnalysisChartRegion({
         actions={<NoticeAction onClick={onRun}>Run again</NoticeAction>}
       >
         <p>
-          Polling stopped, not the job. A long date range on a fast timeframe can outrun this
-          window — narrow the range and try again, or check the job list directly.
+          Polling stopped, not the job. A wide date range at a low <code className="data text-signal">step</code>{" "}
+          can outrun this window — narrow the range and try again, or check the job list directly.
         </p>
       </StateNotice>
     );
@@ -434,17 +454,13 @@ function AnalysisChartRegion({
         actions={<NoticeAction onClick={onRun}>Run again</NoticeAction>}
       >
         <p>
-          The message above comes straight from the backend. A date range with no stored candles is
-          the usual cause — <b>{startDate} → {endDate}</b> has to be inside the collector's history.
+          The message above comes straight from the backend. A window with no stored candles is the
+          usual cause — <b>{startDate} → {endDate}</b> has to fall inside the collector's history for{" "}
+          <b>{symbol}</b>.
         </p>
       </StateNotice>
     );
   }
-
-  // The result payload is only trusted after checking: a `done` job that
-  // returns partial stats must degrade this region, not unmount the view.
-  const resultTrades = Array.isArray(result?.trades) ? result.trades : [];
-  const barCount = candles?.length ?? 0;
 
   if (result && resultTrades.length === 0) {
     const f = result.stats?.funnel;
@@ -453,19 +469,21 @@ function AnalysisChartRegion({
         severity="empty"
         eyebrow="No trades"
         headline={`The strategy took no positions on ${symbol} in this window.`}
-        detail={`${f?.total_signals ?? 0} signals · ${f?.passed_regime ?? 0} passed regime · ${f?.entered_trades ?? 0} entered`}
+        detail={`${f?.total ?? 0} test points · ${f?.resolved ?? 0} resolved`}
         actions={<NoticeAction onClick={onRun}>Run again</NoticeAction>}
       >
         <p>
-          This is a result, not a failure. The signal funnel below shows which filter removed them —
-          if signals reached the regime filter and stopped there, the window was mostly ranging.
+          This is a result, not a failure. The rejection breakdown below shows which check consumed
+          the test points — a large <b>insufficient HTF</b> count means the window was too short for
+          the higher-timeframe bias to form.
         </p>
       </StateNotice>
     );
   }
 
-  // Trades exist, but /ohlc cannot be asked for the analysed window.
+  // Trades exist, but no candles can be requested for the analysed window.
   if (result && !overlap) {
+    const natives = nativeTimeframes(available);
     return (
       <StateNotice
         severity="empty"
@@ -474,63 +492,84 @@ function AnalysisChartRegion({
         detail={
           candleError
             ? `GET /ohlc — ${candleError}`
-            : `GET /ohlc?symbol=${symbol}&timeframe=${timeframe}&limit=… returned ${barCount} bars, none covering ${startDate} → ${endDate}`
+            : !hasCandlePath
+              ? `${symbol} has no data at ${timeframe} — available: ${natives.join(", ") || "none"}`
+              : `GET /ohlc?symbol=${symbol}&timeframe=${timeframe}&limit=${CANDLE_TARGET} returned ${barCount} bars, none covering ${startDate} → ${endDate}`
         }
       >
         <p>
           <code className="data text-signal">/ohlc</code> accepts symbol, timeframe and limit — there
-          is no date-range parameter — so the frontend cannot request historical bars for this
-          window. The result itself is complete: the ledger and funnel below are the full output.
-          Charting it needs a date range on <code className="data text-signal">/ohlc</code>.
+          is no date-range parameter — so the frontend can only ask for the most recent bars. The
+          result itself is complete: the ledger and rejection breakdown below are the full output.
+          Charting an older window needs a date range on{" "}
+          <code className="data text-signal">/ohlc</code>.
         </p>
       </StateNotice>
     );
   }
 
   if (result) {
-    return (
-      <TradingChart candles={candles} trades={resultTrades} height={440} />
-    );
+    return <TradingChart candles={candles} trades={resultTrades} height={420} />;
   }
 
   return null;
 }
 
-// ─── Funnel ─────────────────────────────────────────────────────────────────
+// ─── Rejection breakdown ────────────────────────────────────────────────────
 
-function FunnelRow({
-  label,
-  value,
-  total,
-  terminal,
-}: {
-  label: string;
-  value: number;
-  total: number;
-  terminal: boolean;
-}) {
-  const pct = total > 0 ? (value / total) * 100 : 0;
+/**
+ * The backend's funnel is a set of rejection counters, not a monotonic cascade —
+ * `test_points` in, `trades_resolved` out, and one counter per reason a test
+ * point produced nothing. Rendering it as a classic top-down funnel would imply
+ * an ordering the data does not have.
+ */
+function FunnelPanel({ funnel }: { funnel?: FunnelBreakdown }) {
+  if (!funnel) {
+    return (
+      <p className="px-4 py-3 text-[11px] text-etch-dim">
+        The job returned no funnel counters.
+      </p>
+    );
+  }
+
+  const nonZero = funnel.reasons.filter((r) => r.count > 0);
+  const rows = nonZero.length > 0 ? nonZero : funnel.reasons.slice(0, 3);
+  const peak = Math.max(1, ...rows.map((r) => r.count));
 
   return (
-    <div className="flex items-center gap-3">
-      <span className="label w-[86px] shrink-0 text-etch">{label}</span>
-      <span className="relative h-1.5 flex-1 bg-well">
-        <span
-          className={cn(
-            "absolute inset-y-0 left-0 transition-[width] duration-500",
-            terminal ? "bg-long" : "bg-etch-dim"
-          )}
-          style={{ width: `${pct}%` }}
-        />
-      </span>
-      <span
-        className={cn(
-          "data w-12 shrink-0 text-right text-[11px]",
-          terminal ? "text-long" : "text-etch"
-        )}
-      >
-        {value}
-      </span>
+    <div className="flex flex-col gap-1.5 px-4 py-3">
+      {rows.map((reason) => (
+        <div key={reason.key} className="flex items-center gap-3">
+          <span className="label w-[104px] shrink-0 truncate text-etch" title={reason.label}>
+            {reason.label}
+          </span>
+          <span className="relative h-1.5 flex-1 bg-well">
+            <span
+              className="absolute inset-y-0 left-0 bg-etch-dim transition-[width] duration-500"
+              style={{ width: `${(reason.count / peak) * 100}%` }}
+            />
+          </span>
+          <span className="data w-12 shrink-0 text-right text-[11px] text-etch">
+            {formatCount(reason.count)}
+          </span>
+        </div>
+      ))}
+
+      {/* Resolved trades are the outcome, not another rejection — set apart. */}
+      <div className="mt-1 flex items-center gap-3 border-t border-rule pt-2">
+        <span className="label w-[104px] shrink-0 text-signal">Resolved</span>
+        <span className="relative h-1.5 flex-1 bg-well">
+          <span
+            className="absolute inset-y-0 left-0 bg-long transition-[width] duration-500"
+            style={{
+              width: `${funnel.total > 0 ? (funnel.resolved / funnel.total) * 100 : 0}%`,
+            }}
+          />
+        </span>
+        <span className="data w-12 shrink-0 text-right text-[11px] text-long">
+          {formatCount(funnel.resolved)}
+        </span>
+      </div>
     </div>
   );
 }
@@ -545,12 +584,16 @@ const OUTCOME_TONE: Record<Trade["outcome"], string> = {
 };
 
 function TradeLedger({ trades }: { trades: Trade[] }) {
+  if (trades.length === 0) {
+    return <p className="px-4 py-3 text-[11px] text-etch-dim">No trades to list.</p>;
+  }
+
   return (
-    <div className="max-h-[132px] min-h-0 flex-1 overflow-y-auto">
+    <div className="max-h-[148px] min-h-0 flex-1 overflow-y-auto">
       <table className="w-full border-collapse">
         <thead className="sticky top-0 bg-void">
           <tr>
-            {["Entry", "Dir", "Price", "R", ""].map((h) => (
+            {["Signal", "Dir", "Entry", "SL", "TP", "R", ""].map((h) => (
               <th
                 key={h}
                 className="label border-b border-rule px-2 py-1 text-left font-medium text-etch-dim"
@@ -573,6 +616,8 @@ function TradeLedger({ trades }: { trades: Trade[] }) {
                 {t.direction === "long" ? "LONG" : "SHORT"}
               </td>
               <td className="data px-2 py-1 text-[10px] text-etch">{formatPrice(t.entry)}</td>
+              <td className="data px-2 py-1 text-[10px] text-etch-dim">{formatPrice(t.sl)}</td>
+              <td className="data px-2 py-1 text-[10px] text-etch-dim">{formatPrice(t.tp)}</td>
               <td className={cn("data px-2 py-1 text-[10px]", OUTCOME_TONE[t.outcome])}>
                 {t.rr_achieved != null ? formatRatio(t.rr_achieved) : "—"}
               </td>

@@ -38,8 +38,12 @@ const SECTOR_TONE: Record<Bias, string> = {
 
 const BIAS_SCORE: Record<Bias, number> = { LONG: 1, SHORT: -1, NEUTRAL: 0 };
 
-/** Slowest first — the order the tracks are assigned and weights are derived. */
-const TF_ORDER = ["1M", "1W", "1D", "4H", "1H", "30m", "15m", "5m", "1m"];
+/**
+ * Slowest first — the order the tracks are assigned and weights are derived.
+ * Uppercase because lib/api.ts normalises the backend's timeframe keys, which
+ * arrive in mixed case (1h, 4H, 1D) depending on the writer.
+ */
+const TF_ORDER = ["1MO", "1W", "1D", "4H", "1H", "30M", "15M", "5M", "1M"];
 
 function polar(r: number, deg: number) {
   const rad = (deg * Math.PI) / 180;
@@ -57,7 +61,7 @@ function arcPath(r: number, from: number, to: number): string {
 function ordered(bias: Record<string, Bias> | undefined): Array<[string, Bias]> {
   if (typeof bias !== "object" || bias === null) return [];
   const rank = (tf: string) => {
-    const i = TF_ORDER.indexOf(tf);
+    const i = TF_ORDER.indexOf(tf.toUpperCase());
     return i === -1 ? TF_ORDER.length : i;
   };
   return Object.entries(bias)

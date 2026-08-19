@@ -228,15 +228,33 @@ export function TradingChart({
         const tone =
           trade.outcome === "win" ? C.long : trade.outcome === "loss" ? C.short : C.flat;
         const long = trade.direction === "long";
+
+        const entry: SeriesMarker<Time> = {
+          time: trade.entry_time as unknown as Time,
+          position: long ? "belowBar" : "aboveBar",
+          color: tone,
+          shape: "circle",
+          text: long ? "L" : "S",
+          size: 1,
+        };
+
+        // Analysis trades carry only a signal timestamp — the store has no exit
+        // time — so the outcome is folded into the entry marker's label instead
+        // of being drawn at a time that was never recorded.
+        if (trade.exit_time == null || trade.exit_time === trade.entry_time) {
+          const suffix =
+            trade.outcome === "win"
+              ? "W"
+              : trade.outcome === "loss"
+                ? "L"
+                : trade.outcome === "timeout"
+                  ? "T"
+                  : "";
+          return [{ ...entry, text: suffix ? `${entry.text}·${suffix}` : entry.text }];
+        }
+
         return [
-          {
-            time: trade.entry_time as unknown as Time,
-            position: long ? "belowBar" : "aboveBar",
-            color: tone,
-            shape: "circle",
-            text: long ? "L" : "S",
-            size: 1,
-          },
+          entry,
           {
             time: trade.exit_time as unknown as Time,
             position: long ? "aboveBar" : "belowBar",
@@ -450,18 +468,37 @@ function drawOverlay(
   }
 
   // ── Trade risk / reward boxes (analysis mode) ────────────────────────────
+  //
+  // A trade with no recorded exit time gets a fixed-width box anchored at entry.
+  // Stretching it to an invented exit would draw a duration the backend never
+  // reported.
+  const ANCHORED_WIDTH = 22;
+
   for (const trade of trades) {
     if (budget-- <= 0) break;
-    const xs = spanX(trade.entry_time, trade.exit_time);
-    if (!xs) continue;
 
-    const [x1, x2] = xs;
+    const hasExit = trade.exit_time != null && trade.exit_time !== trade.entry_time;
+
+    let x1: number;
+    let boxWidth: number;
+
+    if (hasExit) {
+      const xs = spanX(trade.entry_time, trade.exit_time as number);
+      if (!xs) continue;
+      x1 = xs[0];
+      boxWidth = Math.max(xs[1] - xs[0], 2);
+    } else {
+      const x = xOf(trade.entry_time);
+      if (x == null || x < -ANCHORED_WIDTH || x > width) continue;
+      x1 = Math.max(x, 0);
+      boxWidth = Math.min(ANCHORED_WIDTH, width - x1);
+      if (boxWidth < 2) continue;
+    }
+
     const yEntry = yOf(trade.entry);
     const ySl = yOf(trade.sl);
     const yTp = yOf(trade.tp);
     if (yEntry == null || ySl == null || yTp == null) continue;
-
-    const boxWidth = Math.max(x2 - x1, 2);
 
     // Risk: entry → stop.
     ctx.fillStyle = "rgba(255, 77, 94, 0.11)";
