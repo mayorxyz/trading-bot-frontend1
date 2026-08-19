@@ -2,68 +2,178 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 5.9% 10%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
-  }
+/* ═══════════════════════════════════════════════════════════════════════════
+   TERMINAL — design tokens
+   Structure is achromatic. The accent (--arc) is reserved for interactive and
+   focus states. Long/short green-red is reserved for trade semantics only and
+   must never appear on chrome.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --void: #08090c;
+  --bay: #0c0e13;
+  --well: #10131a;
+  --rule: #191d26;
+  --rule-bright: #252a36;
+  --etch: #5a6472;
+  --etch-dim: #3a4250;
+  --signal: #e8ecf2;
+
+  --arc: #00d9ff;
+  --arc-dim: #0b7c93;
+
+  --long: #00e08a;
+  --short: #ff4d5e;
+  --flat: #6b7280;
+
+  color-scheme: dark;
 }
 
 @layer base {
   * {
-    @apply border-border;
+    border-color: var(--rule);
   }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
   body {
-    @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    margin: 0;
+    background-color: var(--void);
+    color: var(--signal);
+    font-family: "Archivo Narrow", system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Interactive focus is the accent's primary job. */
+  :focus-visible {
+    outline: 1px solid var(--arc);
+    outline-offset: 1px;
+  }
+
+  /* Native controls, restyled to match the instrument panel. */
+  input,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  input[type="date"] {
+    font-family: "Azeret Mono", ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: -0.01em;
+  }
+
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: invert(0.55) sepia(0.1) saturate(0.2) hue-rotate(160deg);
+    cursor: pointer;
   }
 }
 
-/* Trading terminal aesthetic */
-body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
-}
+/* ─── Type roles ──────────────────────────────────────────────────────────── */
 
-/* Monospace for all numeric data */
-.mono-nums {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+/* All numeric data. Tabular by construction (monospace). */
+.data {
+  font-family: "Azeret Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
 }
 
-/* Custom scrollbar for dark theme */
+/* Section eyebrow: 10px, uppercase, wide tracking. */
+.eyebrow {
+  font-family: "Archivo Narrow", system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--etch);
+}
+
+/* Inline label: 11px, uppercase, moderate tracking. */
+.label {
+  font-family: "Archivo Narrow", system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--etch);
+}
+
+/* Back-compat with the previous stylesheet's numeric utility. */
+.mono-nums {
+  font-family: "Azeret Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* ─── Hairline rules ──────────────────────────────────────────────────────── */
+
+/* A 1px rule that reads as etched rather than drawn. Used for region dividers. */
+.hair-b {
+  box-shadow: inset 0 -1px 0 0 var(--rule);
+}
+.hair-t {
+  box-shadow: inset 0 1px 0 0 var(--rule);
+}
+.hair-r {
+  box-shadow: inset -1px 0 0 0 var(--rule);
+}
+.hair-l {
+  box-shadow: inset 1px 0 0 0 var(--rule);
+}
+
+/* Tick marks that bracket a region label — instrument-panel detailing. */
+.bracket::before,
+.bracket::after {
+  content: "";
+  position: absolute;
+  width: 1px;
+  height: 4px;
+  background: var(--rule-bright);
+  top: 0;
+}
+.bracket::before {
+  left: 0;
+}
+.bracket::after {
+  right: 0;
+}
+
+/* ─── Scrollbars ──────────────────────────────────────────────────────────── */
+
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
-
 ::-webkit-scrollbar-track {
-  background: hsl(var(--background));
+  background: var(--void);
 }
-
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted));
-  border-radius: 4px;
+  background: var(--rule-bright);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--etch-dim);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule-bright) var(--void);
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted-foreground));
+/* ─── Motion ──────────────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }
